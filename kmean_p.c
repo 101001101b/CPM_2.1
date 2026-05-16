@@ -1,11 +1,12 @@
 #include <mpi.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h> // IMPRESCINDIBLE per a memcpy i memset
 
 #define N 2000000
 #define G 400
 
-// Funció Quicksort seqüencial intacta (S'executarà només al Procés 0)
+// Funció Quicksort seqüencial intacta (Només per al Procés 0)
 void qs(int ii, int fi, long fV[], int fA[]) {
     int i, f;
     long pi, pa, vtmp, vta, vfi, vfa;
@@ -41,52 +42,77 @@ void qs(int ii, int fi, long fV[], int fA[]) {
     if (i < fi) qs(i, fi, fV, fA);
 }
 
-// Nucli de l'algorisme K-Means adaptat per a MPI
 void kmean_mpi(int fN_local, int fK, long fV_local[], long fR[], int fA_global[], int rank) {
     int i, j, min, iter = 0;
     long dif, t;
-    long fS_local[G], fS_global[G];
-    int fA_local[G];
+    
+    // Bucle original seqüencial intacte
     int *fD_local = (int *)malloc(fN_local * sizeof(int));
 
+    // Arrays d'acumulació
+    long f_local[G * 2];
+    long f_global[G * 2];
+    
+    // Buffer combinat per fer un sol Bcast net
+    long bcast_buf[G + 1];
+
     do {
-        // 1. Assignació de centroides al tros local de dades
+        // 1. Càlcul de distàncies (Amb promoció a registre)
         for (i = 0; i < fN_local; i++) {
             min = 0;
-            dif = labs(fV_local[i] - fR[0]); // Ús de labs per evitar desbordaments amb long
+            long val = fV_local[i]; 
+            long current_dif = labs(val - fR[0]);
+            
             for (j = 1; j < fK; j++) {
-                long d = labs(fV_local[i] - fR[j]);
-                if (d < dif) {
+                long d = labs(val - fR[j]);
+                if (d < current_dif) {
                     min = j;
-                    dif = d;
+                    current_dif = d;
                 }
             }
             fD_local[i] = min;
         }
 
-        // 2. Preparació d'acumuladors locals
-        for (i = 0; i < fK; i++) {
-            fS_local[i] = 0;
-            fA_local[i] = 0;
-        }
+        // 2. Inicialització a zero ultraràpida per maquinari (memset)
+        memset(f_local, 0, fK * 2 * sizeof(long));
 
-        // 3. Acumulació de coordenades locals
+        // 3. Acumulació
         for (i = 0; i < fN_local; i++) {
-            fS_local[fD_local[i]] += fV_local[i];
-            fA_local[fD_local[i]]++;
+            int idx = fD_local[i] * 2;         
+            f_local[idx] += fV_local[i];       
+            f_local[idx + 1]++;                
         }
 
-        // 4. Sincronització intel·ligent per xarxa (Només sumem els 400 centroides!)
-        MPI_Allreduce(fS_local, fS_global, fK, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Allreduce(fA_local, fA_global, fK, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        // 4. Reducció jeràrquica interna natural d'MPI
+        MPI_Reduce(f_local, f_global, fK * 2, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
-        // 5. Tots els nodes recalculen el nou centre per tenir la versió actualitzada
         dif = 0;
-        for (i = 0; i < fK; i++) {
-            t = fR[i];
-            if (fA_global[i]) fR[i] = fS_global[i] / fA_global[i];
-            dif += labs(t - fR[i]);
+        if (rank == 0) {
+            for (i = 0; i < fK; i++) {
+                t = fR[i];
+                long suma = f_global[i * 2];
+                int quants = (int)f_global[i * 2 + 1]; 
+                
+                if (quants) fR[i] = suma / quants;
+                dif += labs(t - fR[i]);
+                
+                fA_global[i] = quants; 
+            }
+            
+            // Empaquetem dif i els centres junts de cop usant bloqueig de memòria (memcpy)
+            bcast_buf[0] = dif;
+            memcpy(&bcast_buf[1], fR, fK * sizeof(long));
         }
+
+        // 5. UN SOL Bcast de repartiment
+        MPI_Bcast(bcast_buf, fK + 1, MPI_LONG, 0, MPI_COMM_WORLD);
+
+        // Desempaquetem ràpid
+        dif = bcast_buf[0];
+        if (rank != 0) {
+            memcpy(fR, &bcast_buf[1], fK * sizeof(long));
+        }
+
         iter++;
     } while (dif);
 
@@ -100,31 +126,37 @@ int main(int argc, char **argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // ===================================================================
+    // CRONÒMETRE GLOBAL (Engloba TOT el procés, sense excepcions)
+    // ===================================================================
+    MPI_Barrier(MPI_COMM_WORLD); 
+    double t_start = MPI_Wtime(); 
+
     long *V_all = NULL;
     long R[G];
     int A_global[G];
 
-    // Càlcul del repartiment (Scatterv)
     int base_count = N / size;
     int remainder = N % size;
 
-    int *sendcounts = (int *)malloc(size * sizeof(int));
-    int *displs = (int *)malloc(size * sizeof(int));
-    
-    int offset = 0;
-    for (int i = 0; i < size; i++) {
-        // Opció B: Repartir el residu donant una dada més als primers processos
-        sendcounts[i] = base_count + (i < remainder ? 1 : 0);
-        displs[i] = offset;
-        offset += sendcounts[i];
-    }
-
-    int N_local = sendcounts[rank];
+    int N_local = base_count + (rank < remainder ? 1 : 0);
     long *V_local = (long *)malloc(N_local * sizeof(long));
 
-    // NOMÉS el Procés 0 genera tota la memòria massiva i la carrega de dades inicials
+    int *sendcounts = NULL;
+    int *displs = NULL;
+
     if (rank == 0) {
         V_all = (long *)malloc(N * sizeof(long));
+        sendcounts = (int *)malloc(size * sizeof(int));
+        displs = (int *)malloc(size * sizeof(int));
+        
+        int offset = 0;
+        for (int i = 0; i < size; i++) {
+            sendcounts[i] = base_count + (i < remainder ? 1 : 0);
+            displs[i] = offset;
+            offset += sendcounts[i];
+        }
+
         for (int i = 0; i < N; i++) {
             V_all[i] = (rand() % rand()) / N;
         }
@@ -133,30 +165,37 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Repartim el pastís asimètricament per la xarxa
+    // Repartiment
     MPI_Scatterv(V_all, sendcounts, displs, MPI_LONG,
                  V_local, N_local, MPI_LONG,
                  0, MPI_COMM_WORLD);
 
-    // Repartim la versió inicial dels centroides a tothom
     MPI_Bcast(R, G, MPI_LONG, 0, MPI_COMM_WORLD);
 
-    // Comença la computació
+    // Algorisme paral·lel
     kmean_mpi(N_local, G, V_local, R, A_global, rank);
 
-    // Finalitzem: El master ordena i imprimeix l'estat definitiu
+    // Ordenació i impressió seqüencial
     if (rank == 0) {
         qs(0, G - 1, R, A_global);
-        for (int i = 0; i < G; i++) {
+        
+        /*for (int i = 0; i < G; i++) {
             printf("R[%d] : %ld te %d agrupats\n", i, R[i], A_global[i]);
-        }
-        free(V_all); // Alliberem la matriu mestra
+        }*/
+        free(V_all); 
+        free(sendcounts);
+        free(displs);
     }
 
-    // Neteja de la memòria local que tenen tots els nodes
     free(V_local);
-    free(sendcounts);
-    free(displs);
+
+    // Assegurem que tothom ha acabat abans d'aturar el rellotge
+    MPI_Barrier(MPI_COMM_WORLD); 
+    
+    if (rank == 0) {
+        double t_end = MPI_Wtime(); 
+        printf("TIEMPO: %f s\n", t_end - t_start);
+    }
 
     MPI_Finalize();
     return 0;
