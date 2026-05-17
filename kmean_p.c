@@ -1,3 +1,23 @@
+/*
+----------------------------------------------------------------------------------------------------------
+Nodes / PPN (Procs)  | Time (s)   | MPI_Wtime (s) | Speedup (Time) | Speedup (MPI)  | Valid    | Iters      |
+----------------------------------------------------------------------------------------------------------
+2 / 1 (2)            | 13.400     | 12.853        | 1.95522        | 2.03850        | ✅ OK   | iter 68    |
+4 / 1 (4)            | 7.682      | 7.080         | 3.41057        | 3.70033        | ✅ OK   | iter 68    |
+8 / 1 (8)            | 5.074      | 4.484         | 5.16358        | 5.84358        | ✅ OK   | iter 68    |
+16 / 1 (16)          | 3.726      | 3.090         | 7.03167        | 8.47819        | ✅ OK   | iter 68    |
+16 / 2 (32)          | 3.651      | 2.972         | 7.17612        | 8.81614        | ✅ OK   | iter 68    |
+16 / 4 (64)          | 2.651      | 1.933         | 9.88306        | 13.55545       | ✅ OK   | iter 68    |
+16 / 8 (128)         | 2.553      | 1.765         | 10.26244       | 14.84038       | ✅ OK   | iter 68    |
+16 / 16 (256)        | 2.898      | 2.002         | 9.04072        | 13.08701       | ✅ OK   | iter 68    |
+16 / 32 (512)        | 11.753     | 10.024        | 2.22922        | 2.61373        | ✅ OK   | iter 68    |
+----------------------------------------------------------------------------------------------------------
+-> MEDIA ARMÓNICA DE SPEEDUP (Time):      4.41674
+-> MEDIA ARMÓNICA DE SPEEDUP (MPI_Wtime): 5.10357
+==========================================================================================================
+
+*/
+
 #include <mpi.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -130,7 +150,7 @@ int main(int argc, char **argv) {
     // CRONÒMETRE GLOBAL (Engloba TOT el procés, sense excepcions)
     // ===================================================================
     MPI_Barrier(MPI_COMM_WORLD); 
-    double t_start = MPI_Wtime(); 
+    double t_algo_start = MPI_Wtime(); 
 
     long *V_all = NULL;
     long R[G];
@@ -175,26 +195,21 @@ int main(int argc, char **argv) {
     // Algorisme paral·lel
     kmean_mpi(N_local, G, V_local, R, A_global, rank);
 
-    // Ordenació i impressió seqüencial
+    MPI_Barrier(MPI_COMM_WORLD); 
+    double t_algo_end = MPI_Wtime(); 
+
     if (rank == 0) {
         qs(0, G - 1, R, A_global);
         
-        /*for (int i = 0; i < G; i++) {
-            printf("R[%d] : %ld te %d agrupats\n", i, R[i], A_global[i]);
-        }*/
-        free(V_all); 
-        free(sendcounts);
-        free(displs);
-    }
-
-    free(V_local);
-
-    // Assegurem que tothom ha acabat abans d'aturar el rellotge
-    MPI_Barrier(MPI_COMM_WORLD); 
-    
-    if (rank == 0) {
-        double t_end = MPI_Wtime(); 
-        printf("TIEMPO: %f s\n", t_end - t_start);
+        char *out_buf = (char *)malloc(65536);
+        int p_offset = 0;
+        for (int i = 0; i < G; i++) {
+            p_offset += sprintf(out_buf + p_offset, "R[%d] : %ld te %d agrupats\n", i, R[i], A_global[i]);
+        }
+        printf("%s", out_buf);
+        free(out_buf);
+        
+        printf("TIEMPO_ALGO:%f\n", t_algo_end - t_algo_start);
     }
 
     MPI_Finalize();
