@@ -1,23 +1,3 @@
-/*
-----------------------------------------------------------------------------------------------------------
-Nodes / PPN (Procs)  | Time (s)   | MPI_Wtime (s) | Speedup (Time) | Speedup (MPI)  | Valid    | Iters      |
-----------------------------------------------------------------------------------------------------------
-2 / 1 (2)            | 13.060     | 12.481        | 2.00613        | 2.09918        | ✅ OK   | iter 68    |
-4 / 1 (4)            | 6.754      | 6.246         | 3.87918        | 4.19448        | ✅ OK   | iter 68    |
-8 / 1 (8)            | 3.835      | 3.285         | 6.83181        | 7.97495        | ✅ OK   | iter 68    |
-16 / 1 (16)          | 2.289      | 1.728         | 11.44605       | 15.16201       | ✅ OK   | iter 68    |
-16 / 2 (32)          | 1.822      | 1.118         | 14.37980       | 23.44494       | ✅ OK   | iter 68    |
-16 / 4 (64)          | 1.539      | 0.832         | 17.02404       | 31.50428       | ✅ OK   | iter 68    |
-16 / 8 (128)         | 1.313      | 0.634         | 19.95430       | 41.34846       | ✅ OK   | iter 68    |
-16 / 16 (256)        | 1.495      | 0.636         | 17.52508       | 41.22550       | ✅ OK   | iter 68    |
-16 / 32 (512)        | 7.206      | 6.295         | 3.63586        | 4.16199        | ✅ OK   | iter 68    |
-----------------------------------------------------------------------------------------------------------
--> MEDIA ARMÓNICA DE SPEEDUP (Time):      5.99804
--> MEDIA ARMÓNICA DE SPEEDUP (MPI_Wtime): 7.09086
-==========================================================================================================
-*/
-
-
 #include <mpi.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -67,7 +47,7 @@ void kmean_mpi(int fN_local, int fK, long fV_local[], long fR[], int fA_global[]
     
     int *fD_local = (int *)malloc(fN_local * sizeof(int));
     
-    long f_local[G * 2] __attribute__((aligned(64)));
+    long f_local[G * 2] __attribute__((aligned(64))); 
     long f_global[G * 2] __attribute__((aligned(64)));
 
     do {
@@ -99,8 +79,8 @@ void kmean_mpi(int fN_local, int fK, long fV_local[], long fR[], int fA_global[]
         dif = 0;
         for (i = 0; i < fK; i++) {
             t = fR[i];
-            long suma = f_global[i * 2];
-            int quants = (int)f_global[i * 2 + 1]; 
+            long suma = f_global[i * 2]; // Suma de valors per al cluster i (parells)
+            int quants = (int)f_global[i * 2 + 1];  // Nombre de valors per al cluster i (senars)
             
             if (quants) fR[i] = suma / quants;
             dif += labs(t - fR[i]);
@@ -139,11 +119,6 @@ int main(int argc, char **argv) {
 
     long *V_local = (long *)malloc(N_local * sizeof(long));
 
-    // ===================================================================
-    // 2. GENERACIÓ A L'OMBRA (SHADOW GENERATION)
-    // Tots els processos executen el mateix rand() per garantir l'alineació
-    // matemàtica amb el codi seqüencial, però només guarden la seva part.
-    // ===================================================================
     srand(1); // Forcem mateixa llavor a tots els processos
     for (int i = 0; i < N; i++) {
         long val = (rand() % rand()) / N;
@@ -153,7 +128,7 @@ int main(int argc, char **argv) {
             R[i] = val;
         }
         
-        // Només emmagatzemem a memòria RAM el troç que ens pertoca a nosaltres
+        // Només emmagatzemem a memòria el troç que ens pertoca a nosaltres
         if (i >= offset && i < offset + N_local) {
             V_local[i - offset] = val;
         }
